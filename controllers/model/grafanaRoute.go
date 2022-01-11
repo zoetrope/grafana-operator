@@ -29,10 +29,12 @@ func GetPath(cr *v1alpha1.Grafana) string {
 }
 
 func GetIngressLabels(cr *v1alpha1.Grafana) map[string]string {
-	if cr.Spec.Ingress == nil {
-		return nil
+	var labels = map[string]string{}
+	if cr.Spec.Ingress != nil && cr.Spec.Ingress.Labels != nil {
+		labels = cr.Spec.Ingress.Labels
 	}
-	return cr.Spec.Ingress.Labels
+	labels["app"] = cr.Name
+	return labels
 }
 
 func GetIngressAnnotations(cr *v1alpha1.Grafana, existing map[string]string) map[string]string {

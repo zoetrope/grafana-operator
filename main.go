@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -33,7 +34,6 @@ import (
 	"github.com/grafana-operator/grafana-operator/v4/controllers/grafana"
 	"github.com/grafana-operator/grafana-operator/v4/controllers/grafanadashboard"
 	"github.com/grafana-operator/grafana-operator/v4/controllers/grafanadatasource"
-	"github.com/grafana-operator/grafana-operator/v4/internal/k8sutil"
 	"github.com/grafana-operator/grafana-operator/v4/version"
 	routev1 "github.com/openshift/api/route/v1"
 	"github.com/operator-framework/operator-lib/leader"
@@ -50,6 +50,7 @@ import (
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	// +kubebuilder:scaffold:imports
@@ -113,158 +114,158 @@ func main() { // nolint
 	printVersion()
 	assignOpts()
 
-	namespace, err := k8sutil.GetWatchNamespace()
-	if err != nil {
-		log.Log.Error(err, "failed to get watch namespace")
-		os.Exit(1)
-	}
+	namespaces := os.Getenv("GRAFANA_NAMESPACES")
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                 scheme,
-		Namespace:              namespace,
-		MetricsBindAddress:     metricsAddr,
-		Port:                   9443,
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "2c0156f0.integreatly.org",
-	})
-	if err != nil {
-		setupLog.Error(err, "unable to start manager")
-		os.Exit(1)
-	}
+	namespaceSlice := strings.Split("", namespaces)
 
-	if scanAll && flagNamespaces != "" {
-		fmt.Fprint(os.Stderr, "--scan-all and --namespaces both set. Please provide only one")
-		os.Exit(1)
-	}
-
-	// Controller configuration
-	controllerConfig := grafanaconfig.GetControllerConfig()
-	controllerConfig.AddConfigItem(grafanaconfig.ConfigGrafanaImage, flagImage)
-	controllerConfig.AddConfigItem(grafanaconfig.ConfigGrafanaImageTag, flagImageTag)
-	controllerConfig.AddConfigItem(grafanaconfig.ConfigPluginsInitContainerImage, flagPluginsInitContainerImage)
-	controllerConfig.AddConfigItem(grafanaconfig.ConfigPluginsInitContainerTag, flagPluginsInitContainerTag)
-	controllerConfig.AddConfigItem(grafanaconfig.ConfigOperatorNamespace, namespace)
-	controllerConfig.AddConfigItem(grafanaconfig.ConfigDashboardLabelSelector, "")
-	controllerConfig.AddConfigItem(grafanaconfig.ConfigJsonnetBasePath, flagJsonnetLocation)
-
-	// Get the namespaces to scan for dashboards
-	// It's either the same namespace as the controller's or it's all namespaces if the
-	// --scan-all flag has been passed
-	var dashboardNamespaces = []string{namespace}
-	if scanAll {
-		dashboardNamespaces = []string{""}
-		log.Log.Info("Scanning for dashboards in all namespaces")
-	}
-
-	if flagNamespaces != "" {
-		dashboardNamespaces = getSanitizedNamespaceList()
-		if len(dashboardNamespaces) == 0 {
-			fmt.Fprint(os.Stderr, "--namespaces provided but no valid namespaces in list")
+	for _, namespace := range namespaceSlice {
+		mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+			Scheme:                 scheme,
+			Namespace:              namespace,
+			MetricsBindAddress:     metricsAddr,
+			Port:                   9443,
+			HealthProbeBindAddress: probeAddr,
+			LeaderElection:         enableLeaderElection,
+			LeaderElectionID:       "2c0156f0.integreatly.org",
+		})
+		if err != nil {
+			setupLog.Error(err, "unable to start manager")
 			os.Exit(1)
 		}
-		log.Log.Info(fmt.Sprintf("Scanning for dashboards in the following namespaces: [%s]", strings.Join(dashboardNamespaces, ",")))
-	}
 
-	// Get a config to talk to the apiserver
-	cfg, err := k8sconfig.GetConfig()
-	if err != nil {
-		log.Log.Error(err, "")
-		os.Exit(1)
-	}
+		if scanAll && flagNamespaces != "" {
+			log.Log.Error(errors.New("flag conflict"), "--scan-all and --namespaces both set. Please provide only one")
+			os.Exit(1)
+		}
 
-	// Become the leader before proceeding
-	err = leader.Become(context.TODO(), "grafana-operator-lock")
-	if err != nil {
-		log.Log.Error(err, "")
-	}
+		// Controller configuration
+		controllerConfig := grafanaconfig.GetControllerConfig()
+		controllerConfig.AddConfigItem(grafanaconfig.ConfigGrafanaImage, flagImage)
+		controllerConfig.AddConfigItem(grafanaconfig.ConfigGrafanaImageTag, flagImageTag)
+		controllerConfig.AddConfigItem(grafanaconfig.ConfigPluginsInitContainerImage, flagPluginsInitContainerImage)
+		controllerConfig.AddConfigItem(grafanaconfig.ConfigPluginsInitContainerTag, flagPluginsInitContainerTag)
+		controllerConfig.AddConfigItem(grafanaconfig.ConfigOperatorNamespace, namespace)
+		controllerConfig.AddConfigItem(grafanaconfig.ConfigDashboardLabelSelector, "")
+		controllerConfig.AddConfigItem(grafanaconfig.ConfigJsonnetBasePath, flagJsonnetLocation)
 
-	log.Log.Info("Registering Components.")
+		// Get the namespaces to scan for dashboards
+		// It's either the same namespace as the controller's or it's all namespaces if the
+		// --scan-all flag has been passed
+		var dashboardNamespaces = []string{namespace}
+		if scanAll {
+			dashboardNamespaces = []string{""}
+			log.Log.Info("Scanning for dashboards in all namespaces")
+		}
 
-	// Starting the resource auto-detection for the grafana controller
-	autodetect, err := common.NewAutoDetect(mgr)
-	if err != nil {
-		log.Log.Error(err, "failed to start the background process to auto-detect the operator capabilities")
-	} else {
-		autodetect.Start()
-		defer autodetect.Stop()
-	}
+		if flagNamespaces != "" {
+			dashboardNamespaces = getSanitizedNamespaceList()
+			if len(dashboardNamespaces) == 0 {
+				log.Log.Error(errors.New("invalid namespaces"), "--namespaces provided but no valid namespaces in list")
+				os.Exit(1)
+			}
+			log.Log.Info(fmt.Sprintf("Scanning for dashboards in the following namespaces: [%s]", strings.Join(dashboardNamespaces, ",")))
+		}
 
-	// Setup Scheme for all resources
-	if err := apis.AddToScheme(mgr.GetScheme()); err != nil {
-		log.Log.Error(err, "")
-		os.Exit(1)
-	}
+		// Get a config to talk to the apiserver
+		cfg, err := k8sconfig.GetConfig()
+		if err != nil {
+			log.Log.Error(err, "")
+			os.Exit(1)
+		}
 
-	// Setup Scheme for OpenShift routes
-	if err := routev1.AddToScheme(mgr.GetScheme()); err != nil {
-		log.Log.Error(err, "")
-		os.Exit(1)
-	}
+		// Become the leader before proceeding
+		err = leader.Become(context.TODO(), "grafana-operator-lock")
+		if err != nil {
+			log.Log.Error(err, "")
+		}
 
-	if err != nil {
-		log.Log.Error(err, "error starting metrics service")
-	}
+		log.Log.Info("Registering Components.")
 
-	log.Log.Info("Starting the Cmd.")
+		// Starting the resource auto-detection for the grafana controller
+		autodetect, err := common.NewAutoDetect(mgr)
+		if err != nil {
+			log.Log.Error(err, "failed to start the background process to auto-detect the operator capabilities")
+		} else {
+			autodetect.Start()
+			defer autodetect.Stop()
+		}
 
-	// Start one dashboard controller per watch namespace
-	for _, ns := range dashboardNamespaces {
-		startDashboardController(ns, cfg, context.Background())
-		startNotificationChannelController(ns, cfg, context.Background())
-	}
+		// Setup Scheme for all resources
+		if err := apis.AddToScheme(mgr.GetScheme()); err != nil {
+			log.Log.Error(err, "")
+			os.Exit(1)
+		}
 
-	ctx := context.Background()
-	ctx, cancel := context.WithCancel(ctx)
-	if err = (&grafana.ReconcileGrafana{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Plugins:  grafana.NewPluginsHelper(),
-		Context:  ctx,
-		Cancel:   cancel,
-		Config:   grafanaconfig.GetControllerConfig(),
-		Recorder: mgr.GetEventRecorderFor("GrafanaDashboard"),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Grafana")
-		os.Exit(1)
-	}
-	if err = (&grafanadashboard.GrafanaDashboardReconciler{
-		Client: mgr.GetClient(),
-		Log:    ctrl.Log.WithName("controllers").WithName("GrafanaDashboard"),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "GrafanaDashboard")
-		os.Exit(1)
-	}
-	if err = (&grafanadatasource.GrafanaDatasourceReconciler{
-		Client:   mgr.GetClient(),
-		Context:  ctx,
-		Cancel:   cancel,
-		Logger:   ctrl.Log.WithName("controllers").WithName("GrafanaDatasource"),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("GrafanaDatasource"),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "GrafanaDatasource")
-		os.Exit(1)
-	}
-	// +kubebuilder:scaffold:builder
+		// Setup Scheme for OpenShift routes
+		if err := routev1.AddToScheme(mgr.GetScheme()); err != nil {
+			log.Log.Error(err, "")
+			os.Exit(1)
+		}
 
-	if err := mgr.AddHealthzCheck("health", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up health check")
-		os.Exit(1)
-	}
-	if err := mgr.AddReadyzCheck("check", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up ready check")
-		os.Exit(1)
-	}
+		if err != nil {
+			log.Log.Error(err, "error starting metrics service")
+		}
 
-	setupLog.Info("starting manager with options",
-		"watchNamespace", namespace,
-		"dashboardNamespaces", flagNamespaces,
-		"scanAll", scanAll)
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "problem running manager")
-		os.Exit(1)
+		log.Log.Info("Starting the Cmd.")
+
+		// Start one dashboard controller per watch namespace
+		for _, ns := range dashboardNamespaces {
+			startDashboardController(ns, cfg, context.Background())
+			startNotificationChannelController(ns, cfg, context.Background())
+		}
+
+		ctx := context.Background()
+		ctx, cancel := context.WithCancel(ctx)
+		if err = (&grafana.ReconcileGrafana{
+			Client:   mgr.GetClient(),
+			Scheme:   mgr.GetScheme(),
+			Plugins:  grafana.NewPluginsHelper(),
+			Context:  ctx,
+			Cancel:   cancel,
+			Config:   grafanaconfig.GetControllerConfig(),
+			Recorder: mgr.GetEventRecorderFor("GrafanaDashboard"),
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "Grafana")
+			os.Exit(1)
+		}
+		if err = (&grafanadashboard.GrafanaDashboardReconciler{
+			Client: mgr.GetClient(),
+			Log:    ctrl.Log.WithName("controllers").WithName("GrafanaDashboard"),
+			Scheme: mgr.GetScheme(),
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "GrafanaDashboard")
+			os.Exit(1)
+		}
+		if err = (&grafanadatasource.GrafanaDatasourceReconciler{
+			Client:   mgr.GetClient(),
+			Context:  ctx,
+			Cancel:   cancel,
+			Logger:   ctrl.Log.WithName("controllers").WithName("GrafanaDatasource"),
+			Scheme:   mgr.GetScheme(),
+			Recorder: mgr.GetEventRecorderFor("GrafanaDatasource"),
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "GrafanaDatasource")
+			os.Exit(1)
+		}
+		// +kubebuilder:scaffold:builder
+
+		if err := mgr.AddHealthzCheck("health", healthz.Ping); err != nil {
+			setupLog.Error(err, "unable to set up health check")
+			os.Exit(1)
+		}
+		if err := mgr.AddReadyzCheck("check", healthz.Ping); err != nil {
+			setupLog.Error(err, "unable to set up ready check")
+			os.Exit(1)
+		}
+
+		setupLog.Info("starting manager with options",
+			"watchNamespace", namespace,
+			"dashboardNamespaces", flagNamespaces,
+			"scanAll", scanAll)
+		if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+			setupLog.Error(err, "problem running manager")
+			os.Exit(1)
+		}
 	}
 }
 

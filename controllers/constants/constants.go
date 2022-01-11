@@ -20,7 +20,6 @@ const (
 	GrafanaDataVolumeName                   = "grafana-data"
 	GrafanaDatasourcesConfigMapName         = "grafana-datasources"
 	GrafanaHealthEndpoint                   = "/api/health"
-	GrafanaPodLabel                         = "grafana"
 	LastConfigAnnotation                    = "last-config"
 	LastConfigEnvVar                        = "LAST_CONFIG"
 	LastDatasourcesConfigEnvVar             = "LAST_DATASOURCES"
